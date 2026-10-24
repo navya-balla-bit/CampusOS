@@ -1,0 +1,554 @@
+
+const API_BASE = "http://localhost:5000/api";
+let backendReady = false;
+
+async function syncCampusData() {
+  const resources = [
+    ["complaints", complaints],
+    ["lost-items", lostItems],
+    ["events", events],
+    ["notices", notices]
+  ];
+
+  for (const [route, records] of resources) {
+    const response = await fetch(API_BASE + "/" + route, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(records)
+    });
+    if (!response.ok) throw new Error("Sync failed: " + route);
+  }
+  backendReady = true;
+}
+
+async function loadCampusDataFromBackend() {
+  try {
+    const resources = [
+      ["complaints", "complaints"],
+      ["lost-items", "lostItems"],
+      ["events", "events"],
+      ["notices", "notices"]
+    ];
+
+    const results = await Promise.all(resources.map(async ([route]) => {
+      const response = await fetch(API_BASE + "/" + route);
+      if (!response.ok) throw new Error("Load failed: " + route);
+      const result = await response.json();
+      return Array.isArray(result.data) ? result.data : [];
+    }));
+
+    const local = [complaints, lostItems, events, notices];
+    const names = ["complaints", "lostItems", "events", "notices"];
+
+    for (let i = 0; i < results.length; i++) {
+      if (results[i].length > 0) {
+        if (names[i] === "complaints") complaints = results[i];
+        if (names[i] === "lostItems") lostItems = results[i];
+        if (names[i] === "events") events = results[i];
+        if (names[i] === "notices") notices = results[i];
+      } else if (local[i].length > 0) {
+        const routes = ["complaints", "lost-items", "events", "notices"];
+        const response = await fetch(API_BASE + "/" + routes[i], {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(local[i])
+        });
+        if (!response.ok) throw new Error("Migration failed: " + routes[i]);
+      }
+    }
+
+    saveDataLocalOnly();
+    renderAll();
+    backendReady = true;
+    showToast("Connected to CampusOS backend!");
+  } catch (error) {
+    console.error("CampusOS backend connection:", error);
+    showToast("Backend unavailable. Start the server and refresh.");
+  }
+}
+
+function saveDataLocalOnly() {
+  localStorage.setItem(STORAGE_KEYS.complaints, JSON.stringify(complaints));
+  localStorage.setItem(STORAGE_KEYS.lostItems, JSON.stringify(lostItems));
+  localStorage.setItem(STORAGE_KEYS.events, JSON.stringify(events));
+  localStorage.setItem(STORAGE_KEYS.notices, JSON.stringify(notices));
+}
+
+﻿const STORAGE_KEYS = {
+  complaints: "campusOS_complaints",
+  lostItems: "campusOS_lostItems",
+  events: "campusOS_events",
+  notices: "campusOS_notices"
+};
+
+function loadData(key) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || "[]");
+    return Array.isArray(value) ? value : [];
+  } catch {
+    return [];
+  }
+}
+
+let complaints = loadData(STORAGE_KEYS.complaints);
+let lostItems = loadData(STORAGE_KEYS.lostItems);
+let events = loadData(STORAGE_KEYS.events);
+let notices = loadData(STORAGE_KEYS.notices);
+
+function saveData() {
+  try {
+    localStorage.setItem(STORAGE_KEYS.complaints, JSON.stringify(complaints));
+    localStorage.setItem(STORAGE_KEYS.lostItems, JSON.stringify(lostItems));
+    localStorage.setItem(STORAGE_KEYS.events, JSON.stringify(events));
+    localStorage.setItem(STORAGE_KEYS.notices, JSON.stringify(notices));
+    if (backendReady) {
+      syncCampusData().catch(error => {
+        console.error("Backend sync failed:", error);
+        showToast("Saved locally; backend sync failed.");
+      });
+    }
+    return true;
+  } catch (error) {
+    showToast("Could not save data. Browser storage may be full.");
+    return false;
+  }
+}
+
+function escapeHTML(value) {
+  return String(value ?? "").replace(/[&<>"']/g, character => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  })[character]);
+}
+
+function makeId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+function formatDate(value) {
+  if (!value) return "Date not set";
+  const date = new Date(value + "T00:00:00");
+  return Number.isNaN(date.getTime())
+    ? escapeHTML(value)
+    : date.toLocaleDateString("en-IN", {
+        day: "numeric",
+        month: "short",
+        year: "numeric"
+      });
+}
+
+let toastTimer;
+
+function showToast(message) {
+  const toast = document.getElementById("toast");
+  toast.textContent = message;
+  toast.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove("show"), 2800);
+}
+
+function openModal(id) {
+  const modal = document.getElementById(id);
+  if (modal) modal.classList.add("open");
+}
+
+function closeModal(id) {
+  const modal = document.getElementById(id);
+  if (modal) modal.classList.remove("open");
+}
+
+function showPage(pageName) {
+  const validPages = ["overview", "complaints", "lostfound", "events", "notices"];
+  if (!validPages.includes(pageName)) return;
+
+  document.querySelectorAll(".page").forEach(page => {
+    page.classList.remove("active-page");
+  });
+
+  const selectedPage = document.getElementById(pageName + "Page");
+  if (selectedPage) selectedPage.classList.add("active-page");
+
+  document.querySelectorAll(".nav-item").forEach(button => {
+    button.classList.toggle("active", button.dataset.page === pageName);
+  });
+
+  const labels = {
+    overview: "Overview",
+    complaints: "Complaints",
+    lostfound: "Lost & Found",
+    events: "Campus Events",
+    notices: "Notices"
+  };
+
+  document.getElementById("breadcrumbPage").textContent = labels[pageName];
+  window.scrollTo({ top: 0, behavior: "smooth" });
+  renderAll();
+}
+
+function emptyMessage(title, description) {
+  return `<div class="empty-message"><strong>${escapeHTML(title)}</strong>${escapeHTML(description)}</div>`;
+}
+
+function renderOverview() {
+  document.getElementById("totalComplaints").textContent = complaints.length;
+  document.getElementById("totalLost").textContent = lostItems.length;
+  document.getElementById("totalEvents").textContent = events.length;
+  document.getElementById("totalNotices").textContent = notices.length;
+  document.getElementById("complaintNavCount").textContent =
+    complaints.filter(item => item.status !== "Resolved").length;
+
+  const recent = [...complaints].reverse().slice(0, 3);
+  const container = document.getElementById("recentComplaints");
+
+  if (recent.length === 0) {
+    container.className = "empty-state";
+    container.innerHTML = `
+      <span class="empty-icon">◈</span>
+      <strong>All clear for now</strong>
+      <p>Newly reported complaints will appear here.</p>
+      <button class="outline-btn" data-open="complaintModal">Report first issue</button>`;
+    return;
+  }
+
+  container.className = "cards-list";
+  container.innerHTML = recent.map(item => `
+    <article class="data-card">
+      <div class="card-meta">
+        <span class="tag">${escapeHTML(item.category)}</span>
+        <span class="tag ${item.status === "Resolved" ? "green-tag" : item.status === "In Progress" ? "orange-tag" : "blue-tag"}">${escapeHTML(item.status)}</span>
+      </div>
+      <h3>${escapeHTML(item.title)}</h3>
+      <p>${escapeHTML(item.description)}</p>
+      <div class="card-meta">⌖ ${escapeHTML(item.location)} · ${escapeHTML(item.createdAt)}</div>
+      <div class="card-actions">
+        <button class="small-btn" data-page="complaints">Manage complaints →</button>
+      </div>
+    </article>`).join("");
+}
+
+function renderComplaints() {
+  const search = (document.getElementById("complaintSearch").value || "").toLowerCase();
+  const status = document.getElementById("statusFilter").value;
+
+  const filtered = [...complaints].reverse().filter(item => {
+    const text = [item.title, item.category, item.location, item.description].join(" ").toLowerCase();
+    return text.includes(search) && (status === "All" || item.status === status);
+  });
+
+  const container = document.getElementById("complaintList");
+
+  if (!filtered.length) {
+    container.innerHTML = emptyMessage(
+      complaints.length ? "No matching complaints" : "No complaints yet",
+      complaints.length ? "Try a different search or status filter." : "Use New complaint to report your first campus issue."
+    );
+    return;
+  }
+
+  container.innerHTML = filtered.map(item => `
+    <article class="data-card">
+      <div class="card-meta">
+        <span class="tag">${escapeHTML(item.category)}</span>
+        <span class="tag ${item.status === "Resolved" ? "green-tag" : item.status === "In Progress" ? "orange-tag" : "blue-tag"}">${escapeHTML(item.status)}</span>
+      </div>
+      <h3>${escapeHTML(item.title)}</h3>
+      <p>${escapeHTML(item.description)}</p>
+      <div class="card-meta">⌖ ${escapeHTML(item.location)} · ${escapeHTML(item.createdAt)}</div>
+      <div class="card-actions">
+        <label class="small-btn">Status:
+          <select data-action="status" data-id="${escapeHTML(item.id)}" aria-label="Update complaint status">
+            ${["Open", "In Progress", "Resolved"].map(option =>
+              `<option ${item.status === option ? "selected" : ""}>${option}</option>`
+            ).join("")}
+          </select>
+        </label>
+        <button class="small-btn delete-btn" data-action="delete-complaint" data-id="${escapeHTML(item.id)}">Delete</button>
+      </div>
+    </article>`).join("");
+}
+
+function renderLostItems() {
+  const search = (document.getElementById("lostSearch").value || "").toLowerCase();
+  const type = document.getElementById("lostFilter").value;
+
+  const filtered = [...lostItems].reverse().filter(item => {
+    const text = [item.title, item.location, item.description].join(" ").toLowerCase();
+    return text.includes(search) && (type === "All" || item.type === type);
+  });
+
+  const container = document.getElementById("lostList");
+
+  if (!filtered.length) {
+    container.innerHTML = emptyMessage(
+      lostItems.length ? "No matching items" : "No items posted yet",
+      lostItems.length ? "Try another search or filter." : "Add a lost or found item to help your campus community."
+    );
+    return;
+  }
+
+  container.innerHTML = filtered.map(item => `
+    <article class="data-card">
+      <span class="tag ${item.type === "Found" ? "green-tag" : "orange-tag"}">${escapeHTML(item.type)} item</span>
+      <h3>${escapeHTML(item.title)}</h3>
+      <p>${escapeHTML(item.description || "No additional details provided.")}</p>
+      <div class="card-meta">⌖ ${escapeHTML(item.location)}</div>
+      <div class="card-meta">Posted ${escapeHTML(item.createdAt)}</div>
+      <div class="card-actions">
+        <button class="small-btn delete-btn" data-action="delete-lost" data-id="${escapeHTML(item.id)}">Remove post</button>
+      </div>
+    </article>`).join("");
+}
+
+function renderEvents() {
+  const container = document.getElementById("eventList");
+  const ordered = [...events].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+
+  if (!ordered.length) {
+    container.innerHTML = emptyMessage("No events yet", "Add a campus event to share it with students.");
+    return;
+  }
+
+  container.innerHTML = ordered.map(item => `
+    <article class="data-card">
+      <span class="tag green-tag">CAMPUS EVENT</span>
+      <h3>${escapeHTML(item.title)}</h3>
+      <div class="card-meta">▣ ${formatDate(item.date)}</div>
+      <div class="card-meta">⌖ ${escapeHTML(item.location)}</div>
+      <p>${escapeHTML(item.description)}</p>
+      <div class="card-actions">
+        <button class="small-btn" data-action="rsvp" data-id="${escapeHTML(item.id)}">${item.joined ? "✓ Interested" : "＋ I'm interested"}</button>
+        <button class="small-btn delete-btn" data-action="delete-event" data-id="${escapeHTML(item.id)}">Delete event</button>
+      </div>
+    </article>`).join("");
+}
+
+function renderNotices() {
+  const container = document.getElementById("noticeList");
+
+  if (!notices.length) {
+    container.innerHTML = emptyMessage("No notices published", "Campus announcements will appear here when added.");
+    return;
+  }
+
+  container.innerHTML = [...notices].reverse().map(item => `
+    <article class="data-card">
+      <span class="tag ${item.priority === "Urgent" ? "orange-tag" : item.priority === "Important" ? "blue-tag" : "green-tag"}">${escapeHTML(item.priority)} priority</span>
+      <h3>${escapeHTML(item.title)}</h3>
+      <p>${escapeHTML(item.description)}</p>
+      <div class="card-meta">Published ${escapeHTML(item.createdAt)}</div>
+      <div class="card-actions">
+        <button class="small-btn delete-btn" data-action="delete-notice" data-id="${escapeHTML(item.id)}">Delete notice</button>
+      </div>
+    </article>`).join("");
+}
+
+function renderAll() {
+  renderOverview();
+  renderComplaints();
+  renderLostItems();
+  renderEvents();
+  renderNotices();
+}
+
+function today() {
+  return new Date().toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+    year: "numeric"
+  });
+}
+
+document.addEventListener("click", event => {
+  const pageButton = event.target.closest("[data-page]");
+  if (pageButton) {
+    showPage(pageButton.dataset.page);
+    return;
+  }
+
+  const openButton = event.target.closest("[data-open]");
+  if (openButton) {
+    openModal(openButton.dataset.open);
+    return;
+  }
+
+  const closeButton = event.target.closest("[data-close]");
+  if (closeButton) {
+    closeModal(closeButton.dataset.close);
+    return;
+  }
+
+  const actionButton = event.target.closest("[data-action]");
+  if (!actionButton) return;
+
+  const id = actionButton.dataset.id;
+  const action = actionButton.dataset.action;
+
+  if (action === "delete-complaint" && confirm("Delete this complaint?")) {
+    complaints = complaints.filter(item => item.id !== id);
+    saveData();
+    renderAll();
+    showToast("Complaint deleted.");
+  }
+
+  if (action === "delete-lost" && confirm("Remove this item post?")) {
+    lostItems = lostItems.filter(item => item.id !== id);
+    saveData();
+    renderAll();
+    showToast("Item post removed.");
+  }
+
+  if (action === "delete-event" && confirm("Delete this event?")) {
+    events = events.filter(item => item.id !== id);
+    saveData();
+    renderAll();
+    showToast("Event deleted.");
+  }
+
+  if (action === "delete-notice" && confirm("Delete this notice?")) {
+    notices = notices.filter(item => item.id !== id);
+    saveData();
+    renderAll();
+    showToast("Notice deleted.");
+  }
+
+  if (action === "rsvp") {
+    const item = events.find(entry => entry.id === id);
+    if (item) {
+      item.joined = !item.joined;
+      saveData();
+      renderEvents();
+      showToast(item.joined ? "You're marked as interested!" : "Interest removed.");
+    }
+  }
+});
+
+document.addEventListener("change", event => {
+  const target = event.target;
+
+  if (target.matches('[data-action="status"]')) {
+    const item = complaints.find(entry => entry.id === target.dataset.id);
+    if (item) {
+      item.status = target.value;
+      saveData();
+      renderAll();
+      showToast("Complaint status updated.");
+    }
+  }
+});
+
+document.getElementById("complaintSearch").addEventListener("input", renderComplaints);
+document.getElementById("statusFilter").addEventListener("change", renderComplaints);
+document.getElementById("lostSearch").addEventListener("input", renderLostItems);
+document.getElementById("lostFilter").addEventListener("change", renderLostItems);
+
+document.getElementById("complaintForm").addEventListener("submit", event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = new FormData(form);
+
+  complaints.push({
+    id: makeId(),
+    title: data.get("title").trim(),
+    category: data.get("category"),
+    location: data.get("location").trim(),
+    description: data.get("description").trim(),
+    status: "Open",
+    createdAt: today()
+  });
+
+  if (!saveData()) return;
+  form.reset();
+  closeModal("complaintModal");
+  renderAll();
+  showPage("complaints");
+  showToast("Complaint submitted successfully!");
+});
+
+document.getElementById("lostForm").addEventListener("submit", event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = new FormData(form);
+
+  lostItems.push({
+    id: makeId(),
+    type: data.get("type"),
+    title: data.get("title").trim(),
+    location: data.get("location").trim(),
+    description: data.get("description").trim(),
+    createdAt: today()
+  });
+
+  if (!saveData()) return;
+  form.reset();
+  closeModal("lostModal");
+  renderAll();
+  showPage("lostfound");
+  showToast("Item posted successfully!");
+});
+
+document.getElementById("eventForm").addEventListener("submit", event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = new FormData(form);
+
+  events.push({
+    id: makeId(),
+    title: data.get("title").trim(),
+    date: data.get("date"),
+    location: data.get("location").trim(),
+    description: data.get("description").trim(),
+    joined: false
+  });
+
+  if (!saveData()) return;
+  form.reset();
+  closeModal("eventModal");
+  renderAll();
+  showPage("events");
+  showToast("Campus event published!");
+});
+
+document.getElementById("noticeForm").addEventListener("submit", event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const data = new FormData(form);
+
+  notices.push({
+    id: makeId(),
+    title: data.get("title").trim(),
+    priority: data.get("priority"),
+    description: data.get("description").trim(),
+    createdAt: today()
+  });
+
+  if (!saveData()) return;
+  form.reset();
+  closeModal("noticeModal");
+  renderAll();
+  showPage("notices");
+  showToast("Campus notice published!");
+});
+
+document.querySelectorAll(".modal-backdrop").forEach(backdrop => {
+  backdrop.addEventListener("click", event => {
+    if (event.target === backdrop) backdrop.classList.remove("open");
+  });
+});
+
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape") {
+    document.querySelectorAll(".modal-backdrop.open").forEach(modal => {
+      modal.classList.remove("open");
+    });
+  }
+});
+
+document.getElementById("profileBtn").addEventListener("click", () => {
+  showToast("Welcome to your CampusOS student workspace!");
+});
+
+loadCampusDataFromBackend();
+renderAll();
